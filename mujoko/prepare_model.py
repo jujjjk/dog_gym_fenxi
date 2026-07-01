@@ -20,10 +20,12 @@ if __name__ == "__main__":
     # The copied URDF contains an explicit floating world->Trunk joint. This
     # preserves every original hip origin and inertia without reconstructing
     # the root after MuJoCo has already chosen a reference link.
-    for g in trunk.iter("geom"):g.set("contype","1");g.set("conaffinity","0")
+    for g in trunk.iter("geom"):
+        g.set("contype","1");g.set("conaffinity","0")
+        g.set("friction","0.9 0.005 0.0001")
     for j in trunk.iter("joint"):
         if j.get("name") != "floating_base":j.set("armature","0.01")
-    world.insert(0,ET.Element("geom",{"name":"ground","type":"plane","size":"20 20 0.1","rgba":"0.78 0.80 0.82 1","friction":"1 0.005 0.0001","condim":"3"}))
+    world.insert(0,ET.Element("geom",{"name":"ground","type":"plane","size":"20 20 0.1","rgba":"0.78 0.80 0.82 1","friction":"0.9 0.005 0.0001","condim":"3"}))
     world.insert(1,ET.Element("light",{"name":"sun","pos":"0 0 3","dir":"0 0 -1","directional":"true"}))
     act=ET.SubElement(root,"actuator")
     effort={j.get("name"):float(j.find("limit").get("effort")) for j in urdf_root.findall("joint") if j.get("name") in joints}

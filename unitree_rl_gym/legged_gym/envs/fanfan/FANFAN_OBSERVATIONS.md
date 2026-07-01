@@ -1,10 +1,10 @@
-# Fanfan 50维观测说明
+# Fanfan 52维观测说明
 
 本文档对应：
 
 - `legged_gym/envs/fanfan/fanfan_config.py`
 - `legged_gym/envs/fanfan/fanfan_env.py`
-- `FanfanRoughCfg.env.num_observations = 50`
+- `FanfanRoughCfg.env.num_observations = 52`
 
 ## 总体结构
 
@@ -21,13 +21,15 @@ obs = [
     actions,                            # 12
     sin(2*pi*gait_phase),               # 1
     cos(2*pi*gait_phase),               # 1
+    sin(heading_error),                 # 1
+    cos(heading_error),                 # 1
 ]
 ```
 
 总维度：
 
 ```text
-3 + 3 + 3 + 3 + 12 + 12 + 12 + 2 = 50
+3 + 3 + 3 + 3 + 12 + 12 + 12 + 2 + 2 = 52
 ```
 
 ## 索引表
@@ -45,6 +47,11 @@ obs = [
 | `[36:48]` | 12 | 上一个控制步的策略动作 | 无量纲 | 已裁剪到 `[-1, 1]` |
 | `[48]` | 1 | `sin(2*pi*gait_phase)` | 无量纲 | `1.0` |
 | `[49]` | 1 | `cos(2*pi*gait_phase)` | 无量纲 | `1.0` |
+| `[50]` | 1 | `sin(heading_error)` | 无量纲 | `1.0` |
+| `[51]` | 1 | `cos(heading_error)` | 无量纲 | `1.0` |
+
+全向任务使用直接 `yaw_cmd`，不使用绝对 heading；为保持与前进checkpoint
+完全相同的52维网络结构，最后两维固定为中性编码 `[0, 1]`。
 
 ## 12个关节的排列
 
@@ -118,7 +125,7 @@ RL 残差目标幅度：
 ```python
 hip_action_target = hip_actions * 0.08
 front_thigh_calf_target = front_thigh_calf_actions * 0.18
-rear_thigh_calf_target = rear_thigh_calf_actions * 0.22
+rear_thigh_calf_target = rear_thigh_calf_actions * 0.20
 ```
 
 最终 PD 目标还包含默认站姿和对角步态参考偏移：
@@ -132,7 +139,7 @@ target_dof_pos = (
 ```
 
 其中 `scaled_actions` 对 hip 使用 `0.08`，前腿 thigh/calf 使用 `0.18`，
-后腿 thigh/calf 使用 `0.22`。后腿拥有稍大的前后摆动修正范围；hip
+后腿 thigh/calf 使用 `0.20`。后腿拥有稍大的前后摆动修正范围；hip
 仍保持较小幅度，用于抑制左右高速打髋和机身 yaw 甩尾。
 
 策略的原始高斯输出在进入环境前通过 `tanh` 平滑映射到 `[-1, 1]`。
@@ -180,7 +187,7 @@ calf offset  = -0.30 rad
 
 ## 未包含的数据
 
-当前 50 维策略观测不包含：
+当前 52 维策略观测不包含：
 
 - 机身绝对位置或绝对高度
 - roll、pitch、yaw 欧拉角

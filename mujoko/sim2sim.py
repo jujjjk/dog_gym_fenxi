@@ -16,11 +16,11 @@ def body_linear_velocity(q,world_velocity):
     r=np.empty(9);mujoco.mju_quat2Mat(r,q);return r.reshape(3,3).T@world_velocity
 
 class Sim:
-    def __init__(self,model,policy,command=None):
+    def __init__(self,model,policy,command=None,heading=None):
         self.m=mujoco.MjModel.from_xml_path(str(model));self.d=mujoco.MjData(self.m);self.net=ort.InferenceSession(str(policy));self.cfg=load_contract(self.net)
         c=self.cfg;ctl=c["control"];obs=c["observations"];gait=c["gait"]
         self.names=c["joint_names"];self.default=np.asarray(c["default_joint_angles"],np.float32);self.kp=np.asarray(ctl["stiffness"],np.float32);self.kd=np.asarray(ctl["damping"],np.float32);self.scale=np.asarray(ctl["action_scale"],np.float32);self.limits=np.asarray(ctl["torque_limits"],np.float32)
-        self.command=np.asarray(command if command is not None else c["commands"]["default"],np.float32);self.obs_cfg=obs;self.gait=gait
+        self.command=np.asarray(command if command is not None else c["commands"]["default"],np.float32);self.heading=c["commands"]["default_heading"] if heading is None else heading;self.obs_cfg=obs;self.gait=gait
         if abs(self.m.opt.timestep-ctl["sim_dt"])>1e-9: raise RuntimeError(f"MJCF timestep {self.m.opt.timestep} != exported cfg {ctl['sim_dt']}")
         self.decimation=int(ctl["decimation"]);self.q=np.array([self.m.jnt_qposadr[mujoco.mj_name2id(self.m,mujoco.mjtObj.mjOBJ_JOINT,x)] for x in self.names]);self.v=np.array([self.m.jnt_dofadr[mujoco.mj_name2id(self.m,mujoco.mjtObj.mjOBJ_JOINT,x)] for x in self.names]);self.aid=np.array([mujoco.mj_name2id(self.m,mujoco.mjtObj.mjOBJ_ACTUATOR,x+"_motor") for x in self.names]);self.bid=mujoco.mj_name2id(self.m,mujoco.mjtObj.mjOBJ_BODY,"Trunk");self.reset()
     def reset(self):
@@ -33,10 +33,12 @@ class Sim:
             elif "calf" in name:out[i]=self.gait["calf_amplitude"]*np.sin(np.pi*smooth)*(p>=r)
         return out
     def policy(self):
-        quat=self.d.qpos[3:7];linear=body_linear_velocity(quat,self.d.qvel[:3]);angular=self.d.qvel[3:6];phase=(self.n*self.m.opt.timestep*self.decimation%self.gait["period"])/self.gait["period"];o=self.obs_cfg
+        quat=self.d.qpos[3:7];linear=body_linear_velocity(quat,self.d.qvel[:3]);angular=body_linear_velocity(quat,self.d.qvel[3:6]);phase=(self.n*self.m.opt.timestep*self.decimation%self.gait["period"])/self.gait["period"];o=self.obs_cfg
         command=self.command.copy();heading_obs=[]
         if self.cfg["commands"]["heading_command"]:
-            r=np.empty(9);mujoco.mju_quat2Mat(r,quat);r=r.reshape(3,3);yaw=np.arctan2(r[1,0],r[0,0]);error=np.arctan2(np.sin(self.cfg["commands"]["default_heading"]-yaw),np.cos(self.cfg["commands"]["default_heading"]-yaw));command[2]=np.clip(self.cfg["commands"]["heading_gain"]*error,-1,1);heading_obs=[np.sin(error),np.cos(error)]
+            r=np.empty(9);mujoco.mju_quat2Mat(r,quat);r=r.reshape(3,3);yaw=np.arctan2(r[1,0],r[0,0]);error=np.arctan2(np.sin(self.heading-yaw),np.cos(self.heading-yaw));command[2]=np.clip(self.cfg["commands"]["heading_gain"]*error,-1,1);heading_obs=[np.sin(error),np.cos(error)]
+        elif self.cfg["dimensions"]["observations"] == 52:
+            heading_obs=[0.0,1.0]
         obs=np.concatenate((linear*o["lin_vel_scale"],angular*o["ang_vel_scale"],gravity(quat),command*np.asarray(o["command_scale"]),(self.d.qpos[self.q]-self.default)*o["dof_pos_scale"],self.d.qvel[self.v]*o["dof_vel_scale"],self.action,[np.sin(2*np.pi*phase),np.cos(2*np.pi*phase)],heading_obs)).astype(np.float32)
         if obs.size!=self.cfg["dimensions"]["observations"]:raise RuntimeError(f"Observation size {obs.size} != export {self.cfg['dimensions']['observations']}")
         raw=self.net.run(["raw_actions"],{"observations":np.clip(obs,-o["clip"],o["clip"])[None]})[0][0];self.action=np.tanh(raw) if self.cfg["control"]["output_transform"]=="tanh" else raw;self.target=self.default+self.scale*self.action+self.gait_offset(phase);self.n+=1
@@ -44,7 +46,7 @@ class Sim:
         raw=self.kp*(self.target-self.d.qpos[self.q])-self.kd*self.d.qvel[self.v];self.d.ctrl[self.aid]=np.clip(raw,-self.limits,self.limits);mujoco.mj_step(self.m,self.d);return raw
 
 def main():
-    root=Path(__file__).parent;p=argparse.ArgumentParser();p.add_argument("--model",type=Path,default=root/"models/fanfan_scene.xml");p.add_argument("--policy",type=Path,default=root/"models/fanfan_best.onnx");p.add_argument("--duration",type=float,default=20);p.add_argument("--command",nargs=3,type=float);p.add_argument("--viewer",action="store_true");a=p.parse_args();s=Sim(a.model,a.policy,a.command)
+    root=Path(__file__).parent;p=argparse.ArgumentParser();p.add_argument("--model",type=Path,default=root/"models/fanfan_scene.xml");p.add_argument("--policy",type=Path,default=root/"models/fanfan_best.onnx");p.add_argument("--duration",type=float,default=20);p.add_argument("--command",nargs=3,type=float);p.add_argument("--heading",type=float,help="target absolute heading in radians");p.add_argument("--viewer",action="store_true");a=p.parse_args();s=Sim(a.model,a.policy,a.command,a.heading)
     if a.viewer:
         import mujoco.viewer
         with mujoco.viewer.launch_passive(s.m,s.d) as v:

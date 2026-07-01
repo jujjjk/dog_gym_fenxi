@@ -30,7 +30,8 @@ class FanfanRoughCfg(LeggedRobotCfg):
         }
 
     class control(LeggedRobotCfg.control):
-        # Canonical order shared by observations, actions and deployment.
+        # Runtime-verified Isaac Gym DOF order used by checkpoint observations
+        # and actions (the importer does not preserve URDF XML order).
         policy_joint_order = [
             "FL_hip_joint", "FL_thigh_joint", "FL_calf_joint",
             "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
@@ -75,6 +76,7 @@ class FanfanRoughCfg(LeggedRobotCfg):
 
     class commands(LeggedRobotCfg.commands):
         heading_command = True
+        observe_heading_error = True
         resampling_time = 10.0
 
         class ranges(LeggedRobotCfg.commands.ranges):
@@ -125,6 +127,13 @@ class FanfanRoughCfg(LeggedRobotCfg):
         max_contact_force = 60.0
         only_positive_rewards = True
         tracking_sigma = 0.02
+        # Small lateral commands need a tighter, independent tracking signal;
+        # otherwise their error is almost invisible inside the combined xy reward.
+        lateral_tracking_sigma = 0.001
+        longitudinal_tracking_sigma = 0.002
+        # Preserve mirrored hip posture for standing/forward motion, while
+        # allowing the common-mode hip motion physically required by lateral gait.
+        hip_symmetry_lateral_sigma = 0.0004
         torque_near_limit_ratio = 0.90
         peak_torque_soft_ratio = 0.95
         sustained_torque_ratio = 0.75

@@ -206,13 +206,19 @@ class FanfanRobot(LeggedRobot):
     def compute_observations(self):
         phase_angle = 2.0 * torch.pi * self.gait_phase
         phase_obs = torch.stack((torch.sin(phase_angle), torch.cos(phase_angle)), dim=1)
-        heading_error = torch.atan2(
-            torch.sin(self.commands[:, 3] - self.rpy[:, 2]),
-            torch.cos(self.commands[:, 3] - self.rpy[:, 2]),
-        )
-        heading_obs = torch.stack(
-            (torch.sin(heading_error), torch.cos(heading_error)), dim=1
-        )
+        if getattr(self.cfg.commands, "observe_heading_error", False):
+            heading_error = torch.atan2(
+                torch.sin(self.commands[:, 3] - self.rpy[:, 2]),
+                torch.cos(self.commands[:, 3] - self.rpy[:, 2]),
+            )
+            heading_obs = torch.stack(
+                (torch.sin(heading_error), torch.cos(heading_error)), dim=1
+            )
+        else:
+            # Keep the 52-D network/checkpoint shape compatible in direct
+            # vx/vy/yaw-rate mode. [0, 1] is the neutral zero-error encoding.
+            heading_obs = torch.zeros(self.num_envs, 2, device=self.device)
+            heading_obs[:, 1] = 1.0
         self.obs_buf = torch.cat((
             self.base_lin_vel * self.obs_scales.lin_vel,
             self.base_ang_vel * self.obs_scales.ang_vel,
@@ -302,24 +308,75 @@ class FanfanRobot(LeggedRobot):
         return self.rear_leg_dof_indices
 
     def _resample_commands(self, env_ids):
+        ranges = self._active_command_ranges()
         self.commands[env_ids, 0] = torch_rand_float(
-            self.command_ranges["lin_vel_x"][0],
-            self.command_ranges["lin_vel_x"][1],
+            ranges["lin_vel_x"][0],
+            ranges["lin_vel_x"][1],
             (len(env_ids), 1),
             device=self.device,
         ).squeeze(1)
         self.commands[env_ids, 1] = torch_rand_float(
-            self.command_ranges["lin_vel_y"][0],
-            self.command_ranges["lin_vel_y"][1],
+            ranges["lin_vel_y"][0],
+            ranges["lin_vel_y"][1],
             (len(env_ids), 1),
             device=self.device,
         ).squeeze(1)
-        self.commands[env_ids, 2] = torch_rand_float(
-            self.command_ranges["ang_vel_yaw"][0],
-            self.command_ranges["ang_vel_yaw"][1],
-            (len(env_ids), 1),
-            device=self.device,
-        ).squeeze(1)
+        if self.cfg.commands.heading_command:
+            self.commands[env_ids, 3] = torch_rand_float(
+                ranges["heading"][0], ranges["heading"][1],
+                (len(env_ids), 1), device=self.device,
+            ).squeeze(1)
+        else:
+            self.commands[env_ids, 2] = torch_rand_float(
+                ranges["ang_vel_yaw"][0], ranges["ang_vel_yaw"][1],
+                (len(env_ids), 1), device=self.device,
+            ).squeeze(1)
+            sample = torch.rand(len(env_ids), device=self.device)
+            pure_yaw = sample < getattr(self.cfg.commands, "pure_yaw_probability", 0.0)
+            stand = torch.logical_and(
+                sample >= getattr(self.cfg.commands, "pure_yaw_probability", 0.0),
+                sample < getattr(self.cfg.commands, "pure_yaw_probability", 0.0)
+                + getattr(self.cfg.commands, "stand_probability", 0.0),
+            )
+            lateral_start = (
+                getattr(self.cfg.commands, "pure_yaw_probability", 0.0)
+                + getattr(self.cfg.commands, "stand_probability", 0.0)
+            )
+            pure_lateral = torch.logical_and(
+                sample >= lateral_start,
+                sample < lateral_start
+                + getattr(self.cfg.commands, "pure_lateral_probability", 0.0),
+            )
+            sagittal_start = lateral_start + getattr(
+                self.cfg.commands, "pure_lateral_probability", 0.0
+            )
+            pure_sagittal = torch.logical_and(
+                sample >= sagittal_start,
+                sample < sagittal_start
+                + getattr(self.cfg.commands, "pure_sagittal_probability", 0.0),
+            )
+            selected = env_ids[pure_yaw]
+            self.commands[selected, :2] = 0.0
+            selected = env_ids[stand]
+            self.commands[selected, :3] = 0.0
+            selected = env_ids[pure_lateral]
+            self.commands[selected, 0] = 0.0
+            self.commands[selected, 2] = 0.0
+            selected = env_ids[pure_sagittal]
+            self.commands[selected, 1] = 0.0
+            self.commands[selected, 2] = 0.0
+
+    def _active_command_ranges(self):
+        if not getattr(self.cfg.commands, "omni_curriculum", False):
+            return self.command_ranges
+        iteration = self._get_torque_curriculum_iteration()
+        stages = self.cfg.commands.omni_curriculum_stages
+        selected = stages[-1]
+        for stage in stages:
+            if iteration < stage["until_iteration"]:
+                selected = stage
+                break
+        return selected
 
     def check_termination(self):
         super().check_termination()
@@ -367,6 +424,34 @@ class FanfanRobot(LeggedRobot):
         )
         return torch.exp(-torch.square(heading_error) / 0.25)
 
+    def _reward_tracking_lateral_vel(self):
+        """Track signed body-frame lateral speed, including small right commands."""
+        error = torch.square(self.commands[:, 1] - self.base_lin_vel[:, 1])
+        return torch.exp(-error / self.cfg.rewards.lateral_tracking_sigma)
+
+    def _reward_tracking_longitudinal_vel(self):
+        """Prevent lateral commands from being satisfied by drifting backward."""
+        error = torch.square(self.commands[:, 0] - self.base_lin_vel[:, 0])
+        return torch.exp(-error / self.cfg.rewards.longitudinal_tracking_sigma)
+
+    def _lateral_command_activity(self):
+        return 1.0 - torch.exp(
+            -torch.square(self.commands[:, 1])
+            / self.cfg.rewards.hip_symmetry_lateral_sigma
+        )
+
+    def _reward_lateral_hip_common_mode(self):
+        """Move front and rear hip pairs laterally together instead of fishtailing."""
+        hip_action = self.actions[:, self.hip_dof_indices]
+        front_common = 0.5 * (hip_action[:, 0] + hip_action[:, 1])
+        rear_common = 0.5 * (hip_action[:, 2] + hip_action[:, 3])
+        return torch.square(front_common - rear_common) * self._lateral_command_activity()
+
+    def _reward_lateral_yaw_error(self):
+        """Suppress heading oscillation during lateral/diagonal translation."""
+        yaw_rate_error = self.base_ang_vel[:, 2] - self.commands[:, 2]
+        return torch.square(yaw_rate_error) * self._lateral_command_activity()
+
     def _reward_lateral_velocity(self):
         return torch.square(self.base_lin_vel[:, 1])
 
@@ -377,7 +462,15 @@ class FanfanRobot(LeggedRobot):
         hip_pos = self.dof_pos[:, self.hip_dof_indices]
         front_mirror_error = torch.square(hip_pos[:, 0] + hip_pos[:, 1])
         rear_mirror_error = torch.square(hip_pos[:, 2] + hip_pos[:, 3])
-        return front_mirror_error + rear_mirror_error
+        # All four URDF hip axes point along +X. Lateral locomotion therefore
+        # needs a same-sign (common-mode) hip component, which an unconditional
+        # mirror penalty would suppress. Keep the posture constraint at vy=0
+        # and smoothly release it only when lateral motion is commanded.
+        gate = torch.exp(
+            -torch.square(self.commands[:, 1])
+            / self.cfg.rewards.hip_symmetry_lateral_sigma
+        )
+        return (front_mirror_error + rear_mirror_error) * gate
 
     def _reward_diagonal_joint_sync(self):
         error = torch.zeros(self.num_envs, device=self.device)
