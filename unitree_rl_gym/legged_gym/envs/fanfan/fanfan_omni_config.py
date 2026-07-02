@@ -5,7 +5,7 @@ from legged_gym.envs.fanfan.fanfan_config import FanfanRoughCfg, FanfanRoughCfgP
 class _DirectYawCfg(FanfanRoughCfg):
     class commands(FanfanRoughCfg.commands):
         heading_command = False
-        observe_heading_error = False
+        observe_heading_error = True
         resampling_time = 6.0
         pure_yaw_probability = 0.20
         stand_probability = 0.10
@@ -54,6 +54,7 @@ class FanfanOmniV3Cfg(FanfanOmniV2Cfg):
             tracking_longitudinal_vel = 4.0
             lateral_hip_common_mode = 0.0
             lateral_yaw_error = -20.0
+            translation_yaw_error = -10.0
 
 
 class FanfanOmniV4Cfg(FanfanOmniV3Cfg):
@@ -64,6 +65,10 @@ class FanfanOmniV4Cfg(FanfanOmniV3Cfg):
         rear_action_scale = 0.17
 
     class commands(FanfanOmniV3Cfg.commands):
+        # Give straight forward/backward commands enough replay to eliminate
+        # accumulated cross-track drift without forgetting lateral motion.
+        pure_sagittal_probability = 0.30
+        resampling_time = 20.0
         omni_curriculum = True
         omni_curriculum_stages = [
             {"until_iteration": 100, "lin_vel_x": [-0.10, 0.28],
@@ -76,6 +81,11 @@ class FanfanOmniV4Cfg(FanfanOmniV3Cfg):
             lin_vel_x = [-0.12, 0.30]
             lin_vel_y = [-0.10, 0.10]
             ang_vel_yaw = [-0.70, 0.70]
+
+    class rewards(FanfanOmniV3Cfg.rewards):
+        lateral_tracking_sigma = 0.00010
+        class scales(FanfanOmniV3Cfg.rewards.scales):
+            heading_tracking = 10.0
 
 
 class _OmniPPO(FanfanRoughCfgPPO):

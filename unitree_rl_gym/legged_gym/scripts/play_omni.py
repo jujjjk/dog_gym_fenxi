@@ -37,7 +37,7 @@ def mirrored_negative_lateral_policy(policy, observations):
     vy = observations[:, 10:11] / 2.0
     pure_lateral = torch.exp(-torch.square(vx / 0.03))
     lateral_activity = 1.0 - torch.exp(-torch.square(vy / 0.02))
-    compensation = torch.clamp(0.07 - 0.45 * torch.abs(vy), 0.02, 0.06)
+    compensation = torch.clamp(0.08 - 0.45 * torch.abs(vy), 0.03, 0.07)
     observations[:, 9:10] += 2.0 * compensation * pure_lateral * lateral_activity
     if COMMAND[1] >= 0.0:
         return policy(observations)
@@ -71,6 +71,9 @@ def main():
     env_cfg.terrain.num_rows = 2
     env_cfg.terrain.num_cols = 2
     env_cfg.terrain.curriculum = False
+    # A fixed external command must retain its initial heading target for the
+    # entire viewer run instead of accepting accumulated drift every 20 s.
+    env_cfg.commands.resampling_time = max(DURATION + 1.0, 1.0e6)
     env_cfg.noise.add_noise = False
     env_cfg.domain_rand.randomize_friction = False
     env_cfg.domain_rand.push_robots = False
@@ -84,16 +87,33 @@ def main():
     )
     policy = runner.get_inference_policy(device=env.device)
     command = torch.tensor(COMMAND, device=env.device)
+    path_origin = env.root_states[:, :2].clone()
+    path_heading = env.rpy[:, 2].clone()
+    cross_integral = torch.zeros(env.num_envs, device=env.device)
+    straight_mode = COMMAND[0] > 0.03 and abs(COMMAND[1]) < 0.005 and abs(COMMAND[2]) < 0.05
 
     steps = int(DURATION / env.dt)
     for _ in range(steps):
         started = time.time()
         env.commands[:, :3] = command
         env.compute_observations()
-        actions = mirrored_negative_lateral_policy(
-            policy, env.get_observations().detach()
-        )
-        env.step(actions.detach())
+        obs = env.get_observations().detach().clone()
+        if straight_mode:
+            normal = torch.stack((-torch.sin(path_heading), torch.cos(path_heading)), dim=1)
+            cross = torch.sum((env.root_states[:, :2] - path_origin) * normal, dim=1)
+            cross_integral = torch.clamp(cross_integral + cross * env.dt, -0.5, 0.5)
+            vy_correction = torch.clamp(
+                -0.005 - 0.20 * cross - 0.03 * cross_integral
+                - 0.10 * env.base_lin_vel[:, 1], -0.08, 0.08
+            )
+            obs[:, 10] = vy_correction * env.obs_scales.lin_vel
+        actions = mirrored_negative_lateral_policy(policy, obs)
+        _, _, _, dones, _ = env.step(actions.detach())
+        if straight_mode and torch.any(dones):
+            reset_ids = torch.nonzero(dones, as_tuple=False).flatten()
+            path_origin[reset_ids] = env.root_states[reset_ids, :2]
+            path_heading[reset_ids] = env.rpy[reset_ids, 2]
+            cross_integral[reset_ids] = 0.0
         time.sleep(max(0.0, env.dt - (time.time() - started)))
 
 

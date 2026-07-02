@@ -196,6 +196,10 @@ class FanfanRobot(LeggedRobot):
 
     def _post_physics_step_callback(self):
         super()._post_physics_step_callback()
+        if (not self.cfg.commands.heading_command
+                and getattr(self.cfg.commands, "observe_heading_error", False)):
+            target = self.commands[:, 3] + self.commands[:, 2] * self.dt
+            self.commands[:, 3] = torch.atan2(torch.sin(target), torch.cos(target))
         self.gym.refresh_rigid_body_state_tensor(self.sim)
         self.feet_state = self.rigid_body_states_view[:, self.feet_indices, :]
         self.feet_pos = self.feet_state[:, :, :3]
@@ -331,6 +335,8 @@ class FanfanRobot(LeggedRobot):
                 ranges["ang_vel_yaw"][0], ranges["ang_vel_yaw"][1],
                 (len(env_ids), 1), device=self.device,
             ).squeeze(1)
+            if getattr(self.cfg.commands, "observe_heading_error", False):
+                self.commands[env_ids, 3] = self.rpy[env_ids, 2]
             sample = torch.rand(len(env_ids), device=self.device)
             pure_yaw = sample < getattr(self.cfg.commands, "pure_yaw_probability", 0.0)
             stand = torch.logical_and(
@@ -451,6 +457,13 @@ class FanfanRobot(LeggedRobot):
         """Suppress heading oscillation during lateral/diagonal translation."""
         yaw_rate_error = self.base_ang_vel[:, 2] - self.commands[:, 2]
         return torch.square(yaw_rate_error) * self._lateral_command_activity()
+
+    def _reward_translation_yaw_error(self):
+        """Keep every translating gait aligned with its commanded yaw rate."""
+        planar_command_sq = torch.sum(torch.square(self.commands[:, :2]), dim=1)
+        translation_activity = 1.0 - torch.exp(-planar_command_sq / 0.0025)
+        yaw_rate_error = self.base_ang_vel[:, 2] - self.commands[:, 2]
+        return torch.square(yaw_rate_error) * translation_activity
 
     def _reward_lateral_velocity(self):
         return torch.square(self.base_lin_vel[:, 1])

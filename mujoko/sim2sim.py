@@ -24,7 +24,7 @@ class Sim:
         if abs(self.m.opt.timestep-ctl["sim_dt"])>1e-9: raise RuntimeError(f"MJCF timestep {self.m.opt.timestep} != exported cfg {ctl['sim_dt']}")
         self.decimation=int(ctl["decimation"]);self.q=np.array([self.m.jnt_qposadr[mujoco.mj_name2id(self.m,mujoco.mjtObj.mjOBJ_JOINT,x)] for x in self.names]);self.v=np.array([self.m.jnt_dofadr[mujoco.mj_name2id(self.m,mujoco.mjtObj.mjOBJ_JOINT,x)] for x in self.names]);self.aid=np.array([mujoco.mj_name2id(self.m,mujoco.mjtObj.mjOBJ_ACTUATOR,x+"_motor") for x in self.names]);self.bid=mujoco.mj_name2id(self.m,mujoco.mjtObj.mjOBJ_BODY,"Trunk");self.reset()
     def reset(self):
-        mujoco.mj_resetData(self.m,self.d);pos=self.cfg["initial_state"]["base_position"];xyzw=self.cfg["initial_state"]["base_quaternion_xyzw"];self.d.qpos[:7]=[*pos,xyzw[3],xyzw[0],xyzw[1],xyzw[2]];self.d.qpos[self.q]=self.default;self.action=np.zeros(len(self.names),np.float32);self.target=self.default.copy();self.n=0;mujoco.mj_forward(self.m,self.d)
+        mujoco.mj_resetData(self.m,self.d);pos=self.cfg["initial_state"]["base_position"];xyzw=self.cfg["initial_state"]["base_quaternion_xyzw"];self.d.qpos[:7]=[*pos,xyzw[3],xyzw[0],xyzw[1],xyzw[2]];self.d.qpos[self.q]=self.default;self.action=np.zeros(len(self.names),np.float32);self.target=self.default.copy();self.n=0;self.heading_target=0.0;self.path_origin=np.asarray(pos[:2],float);self.cross_integral=0.0;mujoco.mj_forward(self.m,self.d)
     def gait_offset(self,phase):
         out=np.zeros(len(self.names),np.float32);r=self.gait["stance_ratio"]
         for i,name in enumerate(self.names):
@@ -35,8 +35,12 @@ class Sim:
     def policy(self):
         quat=self.d.qpos[3:7];linear=body_linear_velocity(quat,self.d.qvel[:3]);angular=body_linear_velocity(quat,self.d.qvel[3:6]);phase=(self.n*self.m.opt.timestep*self.decimation%self.gait["period"])/self.gait["period"];o=self.obs_cfg
         command=self.command.copy();heading_obs=[]
+        if command[0]>0.03 and abs(command[1])<0.005 and abs(command[2])<0.05:
+            normal=np.array([-np.sin(self.heading_target),np.cos(self.heading_target)]);cross=float(np.dot(self.d.qpos[:2]-self.path_origin,normal));self.cross_integral=float(np.clip(self.cross_integral+cross*self.m.opt.timestep*self.decimation,-0.5,0.5));command[1]=np.clip(-0.005-0.20*cross-0.03*self.cross_integral-0.10*linear[1],-0.08,0.08)
         if self.cfg["commands"]["heading_command"]:
             r=np.empty(9);mujoco.mju_quat2Mat(r,quat);r=r.reshape(3,3);yaw=np.arctan2(r[1,0],r[0,0]);error=np.arctan2(np.sin(self.heading-yaw),np.cos(self.heading-yaw));command[2]=np.clip(self.cfg["commands"]["heading_gain"]*error,-1,1);heading_obs=[np.sin(error),np.cos(error)]
+        elif self.cfg["commands"].get("observe_heading_error",False):
+            r=np.empty(9);mujoco.mju_quat2Mat(r,quat);r=r.reshape(3,3);yaw=np.arctan2(r[1,0],r[0,0]);self.heading_target=np.arctan2(np.sin(self.heading_target+command[2]*self.m.opt.timestep*self.decimation),np.cos(self.heading_target+command[2]*self.m.opt.timestep*self.decimation));error=np.arctan2(np.sin(self.heading_target-yaw),np.cos(self.heading_target-yaw));heading_obs=[np.sin(error),np.cos(error)]
         elif self.cfg["dimensions"]["observations"] == 52:
             heading_obs=[0.0,1.0]
         obs=np.concatenate((linear*o["lin_vel_scale"],angular*o["ang_vel_scale"],gravity(quat),command*np.asarray(o["command_scale"]),(self.d.qpos[self.q]-self.default)*o["dof_pos_scale"],self.d.qvel[self.v]*o["dof_vel_scale"],self.action,[np.sin(2*np.pi*phase),np.cos(2*np.pi*phase)],heading_obs)).astype(np.float32)

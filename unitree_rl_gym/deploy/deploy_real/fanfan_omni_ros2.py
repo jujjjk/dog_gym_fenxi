@@ -52,10 +52,15 @@ class FanfanOmniNode(Node):
         self.action = np.zeros(12, np.float32)
         self.target = self.default.copy()
         self.q = self.dq = self.quat = self.omega = self.velocity = None
+        self.position = None
+        self.path_origin = None
+        self.path_heading = 0.0
+        self.cross_integral = 0.0
         self.last_joint = self.last_imu = self.last_odom = self.last_cmd = 0.0
         self.stand_ready = False
         self.estop_latched = False
         self.counter = 0
+        self.heading_target = None
         self.target_step_limit = 0.03
         self.q_error_limit = 0.30
         self.roll_limit, self.pitch_limit = 0.45, 0.35
@@ -98,6 +103,7 @@ class FanfanOmniNode(Node):
 
     def on_odom(self, msg):
         v=msg.twist.twist.linear;self.velocity=np.array([v.x,v.y,v.z],np.float32)
+        p=msg.pose.pose.position;self.position=np.array([p.x,p.y],np.float32)
         self.last_odom=time.monotonic()
 
     def on_ready(self, msg): self.stand_ready=bool(msg.data)
@@ -125,18 +131,33 @@ class FanfanOmniNode(Node):
                      and min(self.last_joint,self.last_imu,self.last_odom)>0)
         if now-self.last_cmd>self.cmd_timeout:self.desired_cmd.fill(0)
         if self.estop_latched or not self.stand_ready or not feedback_ok:
+            self.heading_target = None
+            self.path_origin = None;self.cross_integral = 0.0
             self.disable("estop" if self.estop_latched else "not_ready_or_feedback_stale");return
 
-        R=quat_matrix(*self.quat);roll=math.atan2(R[2,1],R[2,2]);pitch=math.asin(np.clip(-R[2,0],-1,1))
+        R=quat_matrix(*self.quat);roll=math.atan2(R[2,1],R[2,2]);pitch=math.asin(np.clip(-R[2,0],-1,1));yaw=math.atan2(R[1,0],R[0,0])
         if abs(roll)>self.roll_limit or abs(pitch)>self.pitch_limit:
             self.estop_latched=True;self.disable("attitude_guard");return
         self.cmd += np.clip(self.desired_cmd-self.cmd,-self.cmd_step,self.cmd_step)
+        if self.heading_target is None:self.heading_target=yaw
+        self.heading_target=math.atan2(math.sin(self.heading_target+self.cmd[2]*self.dt),math.cos(self.heading_target+self.cmd[2]*self.dt))
+        heading_error=math.atan2(math.sin(self.heading_target-yaw),math.cos(self.heading_target-yaw))
+        policy_cmd=self.cmd.copy()
+        straight_mode=(self.cmd[0]>0.03 and abs(self.cmd[1])<0.005 and abs(self.cmd[2])<0.05)
+        if straight_mode and self.position is not None:
+            if self.path_origin is None:
+                self.path_origin=self.position.copy();self.path_heading=yaw;self.cross_integral=0.0
+            normal=np.array([-math.sin(self.path_heading),math.cos(self.path_heading)],np.float32)
+            cross=float(np.dot(self.position-self.path_origin,normal));self.cross_integral=float(np.clip(self.cross_integral+cross*self.dt,-0.5,0.5))
+            policy_cmd[1]=np.clip(-0.005-0.20*cross-0.03*self.cross_integral-0.10*self.velocity[1],self.cmd_min[1],self.cmd_max[1])
+        else:
+            self.path_origin=None;self.cross_integral=0.0
         gravity=R.T@np.array([0,0,-1],np.float32)
         phase=(self.counter*self.dt%self.gait["period"])/self.gait["period"]
         o=self.obs_cfg
         obs=np.concatenate((self.velocity*o["lin_vel_scale"],self.omega*o["ang_vel_scale"],gravity,
-            self.cmd*np.asarray(o["command_scale"]),(self.q-self.default)*o["dof_pos_scale"],
-            self.dq*o["dof_vel_scale"],self.action,[np.sin(2*np.pi*phase),np.cos(2*np.pi*phase),0,1])).astype(np.float32)
+            policy_cmd*np.asarray(o["command_scale"]),(self.q-self.default)*o["dof_pos_scale"],
+            self.dq*o["dof_vel_scale"],self.action,[np.sin(2*np.pi*phase),np.cos(2*np.pi*phase),np.sin(heading_error),np.cos(heading_error)])).astype(np.float32)
         inference_start=time.perf_counter()
         raw=self.session.run(["raw_actions"],{"observations":obs[None]})[0][0]
         inference_ms=(time.perf_counter()-inference_start)*1000.0

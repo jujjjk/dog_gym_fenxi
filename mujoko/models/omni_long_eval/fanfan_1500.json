@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "task": "FanfanOmniV4Cfg",
-  "checkpoint": "/home/nszb/gym/unitree_rl_gym/logs/rough_fanfan/Jul02_17-29-26_omni_v4_episode_heading_lock/model_600.pt",
+  "checkpoint": "/home/nszb/gym/unitree_rl_gym/logs/rough_fanfan/Jul02_13-51-43_omni_v4_long_direction/model_1500.pt",
   "dimensions": {
     "observations": 52,
     "actions": 12
@@ -138,7 +138,7 @@
       0.0
     ],
     "heading_command": false,
-    "observe_heading_error": true,
+    "observe_heading_error": false,
     "ranges": {
       "lin_vel_x": [
         -0.12,
@@ -170,5 +170,5 @@
   },
   "episode_length_s": 20,
   "negative_lateral_mirroring": true,
-  "pure_lateral_vx_compensation": "clip(0.08-0.45*abs(vy),0.03,0.07)"
+  "pure_lateral_vx_compensation": "clip(0.07-0.45*abs(vy),0.02,0.06)"
 }

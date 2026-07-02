@@ -41,7 +41,7 @@ class NegativeLateralMirror(torch.nn.Module):
         vy=observations[:,10:11]/self.command_lin_scale
         pure_lateral=torch.exp(-torch.square(vx/0.03))
         lateral_activity=1.0-torch.exp(-torch.square(vy/0.02))
-        compensation=torch.clamp(0.07-0.45*torch.abs(vy),min=0.02,max=0.06)
+        compensation=torch.clamp(0.08-0.45*torch.abs(vy),min=0.03,max=0.07)
         adjusted[:,9:10]=adjusted[:,9:10]+compensation*self.command_lin_scale*pure_lateral*lateral_activity
         native=self.actor(adjusted)
         mirrored_obs=adjusted.index_select(1,self.obs_index)*self.obs_sign
@@ -105,7 +105,7 @@ if __name__ == "__main__":
     torch.onnx.export(export_actor,torch.zeros(1,cfg.env.num_observations),a.output,input_names=["observations"],output_names=["raw_actions"],dynamic_axes={"observations":{0:"batch"},"raw_actions":{0:"batch"}},opset_version=17)
     manifest=deployment_config(cfg,a.checkpoint,a.gym_root)
     manifest["negative_lateral_mirroring"]=a.mirror_negative_lateral
-    manifest["pure_lateral_vx_compensation"]="clip(0.07-0.45*abs(vy),0.02,0.06)" if a.mirror_negative_lateral else 0.0
+    manifest["pure_lateral_vx_compensation"]="clip(0.08-0.45*abs(vy),0.03,0.07)" if a.mirror_negative_lateral else 0.0
     import onnx
     model=onnx.load(a.output);entry=model.metadata_props.add();entry.key="fanfan_deployment_config";entry.value=json.dumps(manifest,separators=(",",":"));onnx.save(model,a.output)
     sidecar=a.output.with_suffix(".json");sidecar.write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
