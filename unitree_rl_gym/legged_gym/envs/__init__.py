@@ -31,3 +31,27 @@ task_registry.register( "fanfan_rouhe", FanfanRouheRobot, FanfanRouheRoughCfg(),
 task_registry.register( "h1", H1Robot, H1RoughCfg(), H1RoughCfgPPO())
 task_registry.register( "h1_2", H1_2Robot, H1_2RoughCfg(), H1_2RoughCfgPPO())
 task_registry.register( "g1", G1Robot, G1RoughCfg(), G1RoughCfgPPO())
+
+# --- fanfan_rouhe_straight: straight-walk correction task ---
+from legged_gym.envs.fanfan_rouhe_straight.fanfan_config import (
+    FanfanRouheStraightCfg,
+    FanfanRouheStraightCfgPPO,
+)
+from legged_gym.envs.fanfan_rouhe_straight.fanfan_env import FanfanRouheStraightRobot
+
+task_registry.register(
+    "fanfan_rouhe_straight",
+    FanfanRouheStraightRobot,
+    FanfanRouheStraightCfg(),
+    FanfanRouheStraightCfgPPO(),
+)
+
+# Forward-only V2: initialized from a proven gait and trained with path locking.
+from legged_gym.envs.fanfan.fanfan_straight_v2_config import (
+    FanfanStraightV2Cfg, FanfanStraightV2CfgPPO,
+)
+from legged_gym.envs.fanfan.fanfan_straight_v2_env import FanfanStraightV2Robot
+task_registry.register(
+    "fanfan_straight_v2", FanfanStraightV2Robot,
+    FanfanStraightV2Cfg(), FanfanStraightV2CfgPPO(),
+)

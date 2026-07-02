@@ -1,0 +1,179 @@
+from legged_gym.envs.base.legged_robot_config import LeggedRobotCfg, LeggedRobotCfgPPO
+
+
+class FanfanRouheStraightCfg(LeggedRobotCfg):
+    class env(LeggedRobotCfg.env):
+        num_observations = 50
+        num_actions = 12
+
+    class normalization(LeggedRobotCfg.normalization):
+        clip_actions = 1.0
+
+    class init_state(LeggedRobotCfg.init_state):
+        pos = [0.0, 0.0, 0.295]
+        default_joint_angles = {
+            "FR_hip_joint": 0.0,
+            "FR_thigh_joint": 0.563,
+            "FR_calf_joint": -0.95,
+            "FL_hip_joint": 0.0,
+            "FL_thigh_joint": 0.563,
+            "FL_calf_joint": -0.95,
+            "RR_hip_joint": 0.0,
+            "RR_thigh_joint": 0.563,
+            "RR_calf_joint": -0.95,
+            "RL_hip_joint": 0.0,
+            "RL_thigh_joint": 0.563,
+            "RL_calf_joint": -0.95,
+        }
+
+    class control(LeggedRobotCfg.control):
+        control_type = "P"
+        stiffness = {
+            "hip": 100.0,
+            "thigh": 100.0,
+            "calf": 100.0,
+        }
+        damping = {
+            "hip": 6.0,
+            "thigh": 6.0,
+            "calf": 6.0,
+        }
+        action_scale = 0.12
+        rear_action_scale = 0.14
+        hip_action_scale = 0.05
+        decimation = 4
+
+    class asset(LeggedRobotCfg.asset):
+        file = "{LEGGED_GYM_ROOT_DIR}/resources/robots/fanfan/urdf/fanfan.urdf"
+        name = "fanfan_rouhe_straight"
+        foot_name = "foot"
+        # 截图里的失效模式是用小腿/膝部接地前蹭；只匹配 calf，
+        # 避免 thigh 同时选中 thigh_shoulder 的内部接触力。
+        penalize_contacts_on = ["calf"]
+        terminate_after_contacts_on = ["Trunk"]
+        # Isaac Gym uses 1 to filter self-collisions. The hip and shoulder
+        # collision shapes overlap by design and otherwise create huge forces.
+        self_collisions = 1
+        # 关键：不要合并 fixed joint，避免 thigh_shoulder / imu_link 导致形态异常
+        collapse_fixed_joints = False
+        # 关键：不要 flip visual
+        flip_visual_attachments = False
+        armature = 0.01
+
+    class commands(LeggedRobotCfg.commands):
+        # 直行纠偏版：打开 legged_gym 标准 heading controller。
+        # 它会把 commands[:, 3] 的目标航向转换成 commands[:, 2] 的 yaw-rate 命令。
+        heading_command = True
+        resampling_time = 10.0
+
+        # 固定偏置项：如果仿真/真机总是稳定向同一边偏，可以从 ±0.02 开始试。
+        # 先保持 0.0，避免训练阶段把系统性偏置学死。
+        command_yaw_bias = 0.0
+        max_abs_yaw_rate_command = 0.6
+
+        class ranges(LeggedRobotCfg.commands.ranges):
+            # 第一阶段先训纯直行。走直以后再逐步放宽 vx 或增加 yaw/横移课程。
+            lin_vel_x = [0.10, 0.20]
+            lin_vel_y = [0.0, 0.0]
+            ang_vel_yaw = [0.0, 0.0]
+            heading = [0.0, 0.0]
+
+    class domain_rand(LeggedRobotCfg.domain_rand):
+        randomize_friction = False
+        randomize_base_mass = False
+        push_robots = False
+
+    class terrain(LeggedRobotCfg.terrain):
+        mesh_type = "plane"
+        measure_heights = False
+
+    class rewards(LeggedRobotCfg.rewards):
+        soft_dof_pos_limit = 0.95
+        base_height_target = 0.275
+        min_base_height = 0.225
+        min_base_height_soft = 0.255
+        calf_angle_limits = [-2.65, -0.90]
+        terminate_on_calf_angle = False
+        terminate_rear_sit_pitch = -0.25
+        max_rear_sit_pitch = 0.03
+        front_feet_contact_height = 0.25
+        rear_calf_fold_limit = -2.20
+        rear_load_bias_force = 20.0
+        stand_height_sigma = 0.0008
+        stand_posture_sigma = 0.12
+        rear_leg_posture_height = 0.25
+        gait_period = 0.54
+        gait_stance_ratio = 0.62
+        gait_thigh_amplitude = 0.0
+        gait_calf_amplitude = -0.22
+        swing_height_target = 0.04
+        swing_height_sigma = 0.0004
+        max_contact_force = 60.0
+        only_positive_rewards = True
+
+        # 原来是 0.02，太尖锐时策略早期速度/航向偏差大，梯度容易不好用。
+        # 纠偏阶段改为 0.04，稳定后可再试回 0.02。
+        tracking_sigma = 0.04
+
+        # 世界坐标横向偏移惩罚的尺度，env 里用 y_drift^2。
+        # 如果 20s 后还是横向漂移大，可以把 world_y_drift 从 -0.6 调到 -1.0。
+        class scales(LeggedRobotCfg.rewards.scales):
+            termination = -5.0
+            stand_height = 2.0
+            stand_posture = 0.2
+            tracking_lin_vel = 6.0
+            tracking_ang_vel = 3.0
+            backward_velocity = -5.0
+            diagonal_gait = 4.0
+            swing_height = 0.2
+            flight = -2.0
+            lin_vel_z = -0.75
+            ang_vel_xy = -0.7
+            yaw_rate = -3.0
+
+            # 新增：直行纠偏核心奖励。
+            # lateral_velocity：压 body-frame vy。
+            # heading_error：压累计 yaw/航向误差。
+            # world_y_drift：压世界坐标横向漂移。
+            lateral_velocity = -5.0
+            heading_error = -2.0
+            world_y_drift = -0.6
+
+            hip_velocity = -0.003
+            hip_symmetry = -1.0
+            diagonal_joint_sync = -0.5
+            action_magnitude = -0.025
+            orientation = -3.5
+            base_height = -10.0
+            low_base_height = -10.0
+            rear_sit = -10.0
+            front_feet_contact = -0.5
+            rear_calf_fold = -2.0
+            rear_load_bias = -1.5
+            rear_leg_posture = -1.0
+            torques = -0.00001
+            dof_vel = -0.0
+            dof_acc = -5.0e-8
+            action_rate = -0.03
+            # 明确压掉膝盖/小腿接地的投机解。
+            collision = -2.0
+            # 保守动作下适度提高限位惩罚，避免靠打限位撑地。
+            dof_pos_limits = -2.0
+            calf_angle_limits = -4.0
+            feet_air_time = 0.0
+
+    class sim(LeggedRobotCfg.sim):
+        substeps = 2
+
+        class physx(LeggedRobotCfg.sim.physx):
+            num_position_iterations = 8
+            num_velocity_iterations = 4
+
+
+class FanfanRouheStraightCfgPPO(LeggedRobotCfgPPO):
+    class algorithm(LeggedRobotCfgPPO.algorithm):
+        entropy_coef = 0.001
+
+    class runner(LeggedRobotCfgPPO.runner):
+        run_name = "fanfan_rouhe_straight_v1"
+        experiment_name = "rough_fanfan_rouhe_straight"
