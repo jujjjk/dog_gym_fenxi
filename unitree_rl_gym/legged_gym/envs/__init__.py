@@ -55,3 +55,12 @@ task_registry.register(
     "fanfan_straight_v2", FanfanStraightV2Robot,
     FanfanStraightV2Cfg(), FanfanStraightV2CfgPPO(),
 )
+
+# Forward-only continuation with the requested RS01 Kp/Kd and PD error bounds.
+from legged_gym.envs.fanfan.fanfan_straight_pd8_config import (
+    FanfanStraightPD8Cfg, FanfanStraightPD8CfgPPO,
+)
+task_registry.register(
+    "fanfan_straight_pd8", FanfanStraightV2Robot,
+    FanfanStraightPD8Cfg(), FanfanStraightPD8CfgPPO(),
+)

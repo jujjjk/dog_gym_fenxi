@@ -92,6 +92,19 @@ class FanfanRobot(LeggedRobot):
         self.max_abs_raw_torque = torch.zeros(
             self.num_envs, dtype=torch.float, device=self.device
         )
+        error_limits = getattr(self.cfg.control, "pd_position_error_limits", None)
+        if error_limits is not None:
+            self.pd_position_error_limits = torch.tensor(
+                [
+                    next(value for joint_type, value in error_limits.items()
+                         if joint_type in dof_name)
+                    for dof_name in self.dof_names
+                ],
+                dtype=torch.float,
+                device=self.device,
+            )
+        else:
+            self.pd_position_error_limits = None
 
     def _compute_torques(self, actions):
         actions_scaled = actions * self.cfg.control.action_scale
@@ -126,9 +139,16 @@ class FanfanRobot(LeggedRobot):
                 self.cfg.rewards.gait_calf_amplitude * swing_profile[:, foot_slot]
             )
         target_dof_pos = actions_scaled + gait_offset + self.default_dof_pos
-        raw_torques = self.motor_strength * (self.p_gains * (
-            target_dof_pos - self.dof_pos
-        ) - self.d_gains * self.dof_vel)
+        position_error = target_dof_pos - self.dof_pos
+        if self.pd_position_error_limits is not None:
+            position_error = torch.clamp(
+                position_error,
+                -self.pd_position_error_limits,
+                self.pd_position_error_limits,
+            )
+        raw_torques = self.motor_strength * (
+            self.p_gains * position_error - self.d_gains * self.dof_vel
+        )
         clipped_torques = torch.clip(
             raw_torques, -self.torque_limits, self.torque_limits
         )

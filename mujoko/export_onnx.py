@@ -73,6 +73,9 @@ def deployment_config(cfg, checkpoint, gym_root):
         "control":{"sim_dt":cfg.sim.dt,"decimation":cfg.control.decimation,
                    "stiffness":[matched(cfg.control.stiffness,n) for n in names],
                    "damping":[matched(cfg.control.damping,n) for n in names],
+                   "position_error_limits":[
+                       matched(cfg.control.pd_position_error_limits,n) for n in names
+                   ] if hasattr(cfg.control,"pd_position_error_limits") else None,
                    "action_scale":scales,"torque_limits":[effort[n] for n in names],
                    "output_transform":"tanh"},
         "observations":{"clip":cfg.normalization.clip_observations,
